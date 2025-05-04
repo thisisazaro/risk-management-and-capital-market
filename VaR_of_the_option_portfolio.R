@@ -454,7 +454,6 @@ Z1 <- rnorm(N)
 rho <- as.numeric(correlation)  # явное приведение
 Z2 <- rho * Z1 + sqrt(1 - rho^2) * rnorm(N)
 
-
 # Симулированные ∆x (log-returns)
 dx_NVDA <- sigmas_10[1] * Z1
 dx_TSM  <- sigmas_10[2] * Z2
@@ -489,10 +488,12 @@ S_TSM_sim  <- S_TSM * exp(dx_TSM)
 
 # Пересчет цены
 delta_NVDA_MC <- mapply(reprice_option, S_NVDA_sim, MoreArgs = list(
-        S0 = S_NVDA, K = K_NVDA, r = avg_rf, sigma = vol_NVDA_annual, T = T, T_new = T1, type = "call"
+        S0 = S_NVDA, K = K_NVDA, r = avg_rf, sigma = vol_NVDA_annual, 
+        T = T, T_new = T1, type = "call"
 ))
 delta_TSM_MC <- mapply(reprice_option, S_TSM_sim, MoreArgs = list(
-        S0 = S_TSM, K = K_TSM, r = avg_rf, sigma = vol_TSM_annual, T = T, T_new = T1, type = "put"
+        S0 = S_TSM, K = K_TSM, r = avg_rf, sigma = vol_TSM_annual, 
+        T = T, T_new = T1, type = "put"
 ))
 
 # Суммарное изменение портфеля
@@ -503,10 +504,7 @@ VaR_full_mc
 # Full Monte Carlo Simulation с переоценкой опционов по формуле Блэка-Шоулза после 1 дня.
 # VaR (Full Monte Carlo, 99%, 10 дней): ~ $22.05
 
-
-
 # Финальная таблица результатов
-
 full_table_results <- data.frame(
         Method = c("Delta-Normal", "Delta-Gamma", "Monte Carlo (partial)", "Monte Carlo (full BS)"),
         VaR_99_10day = round(c(VaR_delta_normal, VaR_delta_gamma, VaR_mc_partial, VaR_full_mc), 2)
@@ -518,7 +516,6 @@ kable(full_table_results)
 # Delta-Gamma analytic и Full MC дают самые реалистичные оценки — около $22.
 # Partial MC (с линейной симуляцией) занижает риск, т.к. не переоценивает опционы.
 # Delta-Normal чуть занижает VaR, не учитывая кривизну (гамму).
-
 
 # Сравнение VaR разных моделей (bar chart)
 
@@ -589,6 +586,8 @@ ggplot(df_long, aes(x = Price, y = Value, color = Metric)) +
              subtitle = "Delta and Gamma vs Underlying Price",
              x = "Underlying Price (NVDA)", y = "Sensitivity Value") +
         scale_color_manual(values = c("Delta" = "#00bfc4", "Gamma" = "#f8766d")) +
+        geom_vline(xintercept = S_NVDA, linetype = "dotted", color = "gray70") +
+        annotate("text", x = S_NVDA + 1, y = 0.85, label = "Current Price", color = "gray70", hjust = 0) +
         theme_dark() +
         theme(
                 plot.background = element_rect(fill = "#1e1e1e"),
@@ -603,8 +602,109 @@ ggplot(df_long, aes(x = Price, y = Value, color = Metric)) +
 
 
 
+# Sensitivity of TSM Put Option (Delta & Gamma)
+
+# Диапазон цен TSM (±20%)
+S_range_tsm <- seq(0.8 * S_TSM, 1.2 * S_TSM, length.out = 100)
+
+# Расчёт дельты и гаммы для Put
+delta_vals_tsm <- sapply(S_range_tsm, bs_delta, 
+                         K = K_TSM, r = avg_rf, sigma = vol_TSM_annual, T_annual = T, type = "put")
+gamma_vals_tsm <- sapply(S_range_tsm, bs_gamma, 
+                         K = K_TSM, r = avg_rf, sigma = vol_TSM_annual, T_annual = T)
+
+# Таблица
+df_sensitivity_tsm <- data.frame(
+        Price = S_range_tsm,
+        Delta = delta_vals_tsm,
+        Gamma = gamma_vals_tsm
+)
+
+# Перевод в long-формат
+library(tidyr)
+df_long_tsm <- pivot_longer(df_sensitivity_tsm, cols = c("Delta", "Gamma"), names_to = "Metric", values_to = "Value")
+
+# Построение графика
+library(ggplot2)
+ggplot(df_long_tsm, aes(x = Price, y = Value, color = Metric)) +
+        geom_line(size = 1) +
+        labs(
+                title = "Sensitivity of TSM Put Option",
+                subtitle = "Delta and Gamma vs Underlying Price",
+                x = "Underlying Price (TSM)", y = "Sensitivity Value"
+        ) +
+        scale_color_manual(values = c("Delta" = "#00bfc4", "Gamma" = "#f8766d")) +
+        theme_dark() +
+        theme(
+                plot.background = element_rect(fill = "#1e1e1e"),
+                panel.background = element_rect(fill = "#1e1e1e"),
+                plot.title = element_text(face = "bold", size = 16, color = "white"),
+                plot.subtitle = element_text(size = 12, color = "gray70"),
+                axis.title = element_text(size = 13, color = "gray90"),
+                axis.text = element_text(color = "gray80"),
+                legend.title = element_blank(),
+                panel.grid.major = element_line(color = "gray30", linewidth = 0.2)
+        )
+
+
+# Delta ожидаемо идёт от -1 к 0, отражая поведение Put-опциона: при низкой цене 
+# базового актива (deep ITM) — дельта ≈ -1, при высокой цене (deep OTM) — дельта ≈ 0
+# Gamma положительная и образует колокол вблизи страйка, что также типично для 
+# опционов, чувствительных к цене возле точки «на деньгах».
 
 
 
+# таблицу всех основных Greeks (Delta, Gamma, Vega, Theta) для NVDA Call и TSM Put 
 
+# Общая функция греков
+bs_greeks <- function(S, K, r, sigma, T, type) {
+        d1 <- (log(S / K) + (r + 0.5 * sigma^2) * T) / (sigma * sqrt(T))
+        d2 <- d1 - sigma * sqrt(T)
+        delta <- if (type == "call") pnorm(d1) else pnorm(d1) - 1
+        gamma <- dnorm(d1) / (S * sigma * sqrt(T))
+        vega  <- S * dnorm(d1) * sqrt(T) / 100  # на 1% изменения волатильности
+        theta <- if (type == "call") {
+                (-S * dnorm(d1) * sigma / (2 * sqrt(T)) - r * K * exp(-r * T) * pnorm(d2)) / 252
+        } else {
+                (-S * dnorm(d1) * sigma / (2 * sqrt(T)) + r * K * exp(-r * T) * pnorm(-d2)) / 252
+        }
+        return(c(Delta = delta, Gamma = gamma, Vega = vega, Theta = theta))
+}
+
+# NVDA Call
+greeks_nvda <- bs_greeks(S_NVDA, K_NVDA, avg_rf, vol_NVDA_annual, T, "call")
+
+# TSM Put
+greeks_tsm <- bs_greeks(S_TSM, K_TSM, avg_rf, vol_TSM_annual, T, "put")
+# Создаем таблицу
+greeks_table <- data.frame(
+        Option = c("NVDA Call", "TSM Put"),
+        Delta = c(greeks_nvda["Delta"], greeks_tsm["Delta"]),
+        Gamma = c(greeks_nvda["Gamma"], greeks_tsm["Gamma"]),
+        Vega  = c(greeks_nvda["Vega"], greeks_tsm["Vega"]),
+        Theta = c(greeks_nvda["Theta"], greeks_tsm["Theta"])
+)
+
+# Отображаем красиво
+library(knitr)
+kable(greeks_table, digits = 4, caption = "Greeks Summary for Option Portfolio")
+
+# Delta: чувствительность к изменению цены базового актива
+# Gamma: чувствительность дельты
+# Vega: чувствительность к изменению волатильности (на 1%)
+# Theta: потери стоимости опциона в день (в долларах), т.е. временной распад
+
+# Greek	Значение
+
+# Delta	Направленный риск: если акция ↑ на $1 — насколько изменится цена опциона. 
+# NVDA Call реагирует на рост, TSM Put — на падение.
+
+# Gamma	Кривизна: насколько изменится дельта, если акция изменится на $1. Важно 
+# при высокой волатильности.
+
+# Vega	Чувствительность к изменению волатильности. Оба опциона реагируют сильно: 
+# особенно важно во время отчетов компаний.
+
+# Theta	Временной распад: сколько теряет опцион в день (в долларах). 
+# Отрицательный — потеря стоимости с течением времени.
 
